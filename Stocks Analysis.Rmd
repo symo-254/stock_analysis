@@ -1,0 +1,277 @@
+---
+title: "Top 10 Stocks Analysis"
+author: "Simon Macharia"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(zoo)
+library(reshape2)
+library(corrplot)
+library(readr)
+library(scales)
+```
+
+# 1. ASK - Business Task
+
+## 1.1. Key Questions:
+
+-   What stock has performed best over time.
+-   What are the volatility patterns of each stock.
+-   Which stocks are most correlated, suggesting diversification opportunities.
+-   Are there trends or seasonality in returns or volume traded.
+-   How can we identify overvalued or undervalued stocks.
+
+## 1.2. Business Goal:
+
+To assess performance, trends, volatility, and correlation among 10 different stocks to inform investment or portfolio decisions.
+
+# 2. PLAN - Data Requirements
+
+The data to be used will include top 10 stocks in the last five years.\
+That data is recorded in daily time frame trend.\
+
+## Key performance indicators.
+
+-   Daily return.
+-   Cumulative return.
+-   Volatility (standard deviation).
+-   Sharpe ratio.
+-   Volume trends.
+
+**Data**: `10_stocks_data.csv`
+
+# 3. PROCESS - Clean and Prepare the data
+
+## 3.1 Load data
+
+```{r load-data}
+stocks <- read_csv("10_stocks_data.csv")
+```
+
+## 3.2 Daily Returns
+
+```{r daily-returns}
+stocks <- stocks %>% 
+  group_by(symbol) %>% 
+  mutate(
+    previous_day_adjusted = lag(adjusted),
+    daily_return = round((adjusted/ lag(adjusted) - 1) * 100, 2)
+    ) %>% 
+  arrange(symbol, date)
+
+stocks
+```
+
+# 4. ANALYZE - Explore the Data
+
+## 4.4. Time series analysis
+
+### 4.4.1. Monthly trends
+
+```{r daily-trend}
+monthly_trend <- stocks %>%
+  mutate(
+    year = year(date),
+    month = month(date, label = TRUE)
+  ) %>%
+  group_by(symbol,year,month) %>%
+  arrange(date) %>%
+  summarise(
+    monthly_open = first(open),                   
+    monthly_close = last(close)
+  ) %>% 
+  mutate(
+    monthly_returns = round((monthly_close/lag(monthly_close) -1)* 100, 2)
+  ) %>% 
+  select(symbol, year, month, monthly_open, monthly_close, monthly_returns)
+
+monthly_trend
+```
+
+### 4.4.2. Yearly trends
+
+```{r yearly-trend}
+yearly_trend <- stocks %>% 
+  mutate(
+    year = year(date)
+  ) %>% 
+  group_by(symbol, year) %>% 
+  summarise(
+    yearly_open = first(open),
+    yearly_close = last(close)
+  ) %>% 
+  mutate(
+    previous_close = lag(yearly_close),
+    yearly_returns = round((yearly_close/lag(yearly_close) - 1)* 100, 2)
+  ) %>% 
+  select(symbol, year, yearly_open, yearly_close, previous_close, yearly_returns)
+
+yearly_trend
+```
+
+## 4.5. Volatility (Rolling Std Dev)
+
+```{r month-volatility}
+yearly_volatility <- stocks %>% 
+  mutate(
+    year = year(date)
+  ) %>% 
+  group_by(year, symbol) %>% 
+  mutate(rolling_volatility = rollapply(daily_return, width = 30, FUN = sd, fill = NA)) %>% 
+  summarise(
+    avg_volatility = mean(rolling_volatility, na.rm = TRUE),
+    max_volatility = max(rolling_volatility, na.rm = TRUE),
+    .groups = "drop"
+  ) %>% 
+  arrange(year, desc(avg_volatility))
+
+yearly_volatility
+```
+
+## 4.6 Volume Analysis
+
+```{r volume}
+volume <- stocks %>% 
+  mutate(
+    year = year(date)
+  ) %>% 
+  group_by(year, symbol) %>% 
+  summarise(
+    avg_volume = mean(volume, na.rm = TRUE),
+    max_volume= max(volume, na.rm = TRUE),
+    .groups = "drop"
+  ) %>% 
+  arrange(year, desc(avg_volume))
+  
+volume
+```
+
+## 4.7 Correlation Analysis
+
+```{r correlation}
+correlation_data <- stocks %>% 
+  mutate(
+    daily_range = high - low,
+    roll_volatility = rollapply(daily_return, width = 30, FUN = sd, fill = NA, align = "right"),
+    roll_volume = rollapply(volume, width = 30, FUN = mean, fill = NA, align = "right")
+  ) %>% 
+  select(symbol, close, daily_return, daily_range, volume, roll_volume, roll_volatility ) %>% 
+  drop_na()
+
+cor_matrix <- correlation_data %>%
+  ungroup() %>% 
+  select(where(is.numeric)) %>%
+  cor(use = "complete.obs")
+
+cor_matrix
+
+melted_mat <- melt(cor_matrix)
+
+melted_mat
+
+```
+
+# 5. SHARE - Visualizations
+
+## 5.1. Cumulative performance over time
+
+**Chart**: Line chart for cumulative returns over time for each stock
+
+```{r returns-overtime}
+stocks %>%
+  group_by(symbol) %>%
+  filter(symbol %in% c('TSLA', 'META', 'NVDA')) %>% 
+  arrange(date) %>%
+  mutate(
+    daily_return_clean = ifelse(is.na(daily_return), 0, daily_return),
+    cumulative_return = cumsum(daily_return_clean)
+  ) %>%
+  ggplot(aes(x = date, y = cumulative_return, color = symbol)) +
+  geom_line() +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") + 
+  labs(
+    title = "Cumulative Returns Over Time",
+    subtitle = "Top 10 Stocks | Adjusted for Daily Returns",
+    y = "Cumulative Return (%)",
+    x = "Date",
+    color = "Stock Symbol"
+  ) +
+  theme_minimal(base_size = 10) + 
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 12, color = "gray40"),
+    axis.text.x = element_text(angle = 45, hjust = 1),  # rotated x labels
+    legend.position = "right",
+    legend.title = element_text(face = "bold")
+  )
+```
+
+## 5.2. Volatility line plot
+
+**Chart**:Line plot of rolling volatility (30-day) per stock
+
+```{r volatility-plot}
+stocks %>%
+  mutate(year = year(date)) %>%
+  filter(symbol %in% c('TSLA', 'META', 'NVDA')) %>%
+  mutate(rolling_volatility = rollapply(daily_return, width = 30, FUN = sd, fill = NA)) %>%
+  ggplot(aes(x = date, y = rolling_volatility, colour = symbol)) +
+  geom_line(alpha = 0.8, linewidth = 0.8) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  labs(title = "Rolling 30-Day Volatility", y = "Volatility (SD)", x = "Date") +
+  theme_minimal()+
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+```
+
+**Chart**: Bar plot for average volatility
+
+```{r avg-volatility-plot}
+monthly_volatility %>% 
+  ggplot(aes(x = factor(year), y = avg_volatility, fill = symbol))+
+  geom_col(position = "dodge")+
+  labs(title = "Avarage volatility by year", x = "Year",y = "Average Volatility")+
+  theme_minimal()
+```
+
+## 5.3. Yearly returns plot
+
+**Chart**:Bar plot of yearly returns, faceted by stock.
+
+```{r retrns-plot}
+yearly_trend %>% 
+  ggplot(aes(x = factor(year),y = yearly_returns, fill = symbol))+
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8),width = 1.0)+
+  labs(title = "Yearly Returns by Stock", x = "Year", y = "Returns (%)")+
+  theme_minimal()+
+  scale_x_discrete(expand = c(0,0))
+```
+
+## 5.4. Correlation plot
+
+```{r cor-plot}
+corrplot(cor_matrix, method = "color", type = "upper", tl.cex = 0.8, tl.col = "black", addCoef.col = "black")
+
+```
+
+## 5.5. AVG Volume trend
+
+**Chart**: Bar plot of average volume per year to show trading interests and\
+liquidity patterns.
+
+```{r volume-plot}
+volume %>% 
+  ggplot(aes(x = factor(year), y = avg_volume, fill = symbol))+
+  geom_col(position = "dodge")+
+  scale_y_continuous(labels = label_number(scale = 1/1e+06, suffix = "M"))+
+  labs(title = "Average trading volume by year", x = "Year", y = "Average volume in(millions)")+
+  theme_minimal()
+```
